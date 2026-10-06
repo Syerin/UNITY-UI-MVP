@@ -43,7 +43,7 @@ MonoBehaviour:
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 32a8af2571030f949b9b53e8d3492da0, type: 3}
   m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::UIRebuildTracker
+  m_EditorClassIdentifier: Syerin.UIRebuildTracker::Syerin.UIRebuild.UIRebuildTracker
   _holdTime: 0.4
   _highlightFadeSpeed: 3
   _enableInRuntime: 1

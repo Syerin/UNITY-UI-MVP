@@ -45,5 +45,5 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::UIRebuildTracker
   _holdTime: 0.4
-  _decaySpeed: 3
+  _highlightFadeSpeed: 3
   _enableInRuntime: 1

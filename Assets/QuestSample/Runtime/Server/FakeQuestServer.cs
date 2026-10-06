@@ -54,6 +54,7 @@ namespace QuestSample.Server
         readonly HashSet<string> _receivedMissions = new HashSet<string>();
         readonly HashSet<string> _receivedTiers = new HashSet<string>();
         long _seasonPoints;
+        long _revision;
         long _day = -1;
         long _season = -1;
         long _skippedDays;
@@ -74,6 +75,7 @@ namespace QuestSample.Server
         {
             Sync();
             _progress[missionKey] = ProgressOf(missionKey) + amount;
+            _revision++;
         }
 
         /// <summary>서버만 다음 날로 넘긴다. 클라이언트는 아직 어제 목록을 들고 있다.</summary>
@@ -203,6 +205,7 @@ namespace QuestSample.Server
                 _seasonPoints += reward.Amount;
             }
 
+            _revision++;
             return reward;
         }
 
@@ -216,6 +219,7 @@ namespace QuestSample.Server
                 _progress.Clear();
                 _receivedMissions.Clear();
                 _progress[LoginMission] = 1; // 접속하면 접속 임무는 바로 완료된다.
+                _revision++;
             }
 
             // 몇째 시즌인지: 가장 최근 월간 초기화 시각의 날짜 번호. 단계 Id에 붙여 시즌이 바뀐 목록을 가려낸다.
@@ -225,6 +229,7 @@ namespace QuestSample.Server
                 _season = season;
                 _seasonPoints = 0;
                 _receivedTiers.Clear();
+                _revision++;
             }
         }
 
@@ -246,7 +251,7 @@ namespace QuestSample.Server
             }
 
             // 시각은 클라이언트 시계 기준으로 보낸다(앞당긴 날만큼 뺀다).
-            return new QuestBoard(missions, _seasonPoints, tiers, Now - SkippedTime);
+            return new QuestBoard(missions, _seasonPoints, tiers, Now - SkippedTime, _revision);
         }
 
         long ProgressOf(string missionKey)
@@ -264,7 +269,8 @@ namespace QuestSample.Server
                 }
             }
 
-            throw new InvalidOperationException("Unknown mission: " + key);
+            // 서버가 모르는 Id: 클라의 목록이 서버와 어긋났다. 초기화가 지난 목록처럼 다뤄 목록을 새로 받게 한다.
+            throw new QuestServerException(QuestError.Expired);
         }
 
         static TierSpec FindTier(string key)
@@ -277,7 +283,7 @@ namespace QuestSample.Server
                 }
             }
 
-            throw new InvalidOperationException("Unknown tier: " + key);
+            throw new QuestServerException(QuestError.Expired);
         }
 
         sealed record MissionSpec(string Key, string Title, long Target, Reward Reward);

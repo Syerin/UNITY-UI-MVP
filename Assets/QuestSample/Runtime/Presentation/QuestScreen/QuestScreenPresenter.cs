@@ -66,10 +66,12 @@ namespace QuestSample.Presentation
                     x.Tab, _store.NextReset(x.Tab, x.Now), x.Now)))
                 .AddTo(_disposables);
 
-            // 받기와 모두 받기를 한 줄로 합쳐, 응답이 오기 전에 들어온 입력은 버린다(연타 · 동시 요청 방지).
+            // 받기와 모두 받기를 한 줄로 합쳐, 응답이 오기 전에 들어온 입력은 버린다(이 화면에서의 연타).
+            // 화면을 닫았다 다시 연 경우처럼 앞서 보낸 요청이 아직 진행 중이면 보내지 않는다 — 요청은 Store에서 한 번에 하나다.
             Observable.Merge(
                     _view.List.OnReceiveClicked.Select(id => new ReceiveRequest(_tab.Value, id)),
                     _view.OnReceiveAllClicked.Select(_ => new ReceiveRequest(_tab.Value, null)))
+                .Where(_ => !_store.IsRequesting.CurrentValue)
                 .SubscribeAwait(HandleReceiveAsync, AwaitOperation.Drop)
                 .AddTo(_disposables);
 
@@ -94,7 +96,8 @@ namespace QuestSample.Presentation
             }
             catch (QuestServerException e)
             {
-                // 서버 거절: Store는 성공 응답만 반영하므로 상태는 그대로다. 이유만 알린다.
+                // 서버 거절 · 통신 오류: Store는 성공 응답만 반영하므로 상태는 그대로다. 이유만 알린다.
+                // 전송 오류(타임아웃 등)도 Store가 경계에서 QuestError.Network로 바꿔 이리 온다.
                 message = QuestFormatter.ErrorText(e.Error);
             }
             catch (OperationCanceledException)

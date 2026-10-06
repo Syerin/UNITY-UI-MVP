@@ -7,7 +7,8 @@ namespace QuestSample.Server
 {
     /// <summary>
     /// 서버 경계. 진행도 · 받음 여부는 모두 서버가 정하고, 클라이언트는 응답을 반영만 한다.
-    /// 거절은 QuestServerException으로 온다.
+    /// 거절은 QuestServerException으로 온다. 구현은 전송 오류(타임아웃 · 연결 끊김)도 QuestError.Network로 바꿔 던진다
+    /// (Store도 경계에서 한 번 더 감싼다).
     /// </summary>
     public interface IQuestServer
     {

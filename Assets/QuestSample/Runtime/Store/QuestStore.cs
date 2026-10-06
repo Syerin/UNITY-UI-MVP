@@ -12,7 +12,9 @@ namespace QuestSample.Store
 {
     /// <summary>
     /// 앱이 살아 있는 동안 하나. 상태는 서버의 성공 응답이 정한다.
-    /// 클라가 먼저 하는 일은 초기화 하나뿐이고(일일 임무는 매일, 시즌 패스는 매월), 그것도 다음 서버 응답이 덮어쓴다. 버튼 없이는 서버에 묻지 않는다.
+    /// 서버 요청은 한 번에 하나다(받기 · 모두 받기 · 목록 받기). 화면을 닫았다 다시 열어도, 진행 중인 요청이 끝나기 전에는 다음 요청을 보내지 않는다.
+    /// 응답은 리비전이 지금보다 낮으면(늦게 도착한 옛 스냅샷) 버린다.
+    /// 클라가 먼저 하는 일은 초기화 하나뿐이고(일일 임무는 매일, 시즌 패스는 매월), 그것도 다음 서버 응답이 덮어쓴다.
     /// 초기화 시각을 넘었는지는 ResetWatcher 하나가 정한다 — 일간 · 월간이 겹쳐도 한 신호로 온다.
     /// 화면은 여기서 만든 값을 구독하기만 하고, 받을 수 있는지 다시 계산하지 않는다.
     /// </summary>
@@ -21,6 +23,7 @@ namespace QuestSample.Store
         readonly IQuestServer _server;
         readonly ResetWatcher _resets;
         readonly ReactiveProperty<QuestBoard> _board = new ReactiveProperty<QuestBoard>(QuestBoard.Empty);
+        readonly ReactiveProperty<bool> _isRequesting = new ReactiveProperty<bool>(false);
         readonly CancellationTokenSource _lifetime = new CancellationTokenSource();
         readonly CompositeDisposable _disposables = new CompositeDisposable();
         bool _loaded;
@@ -44,7 +47,7 @@ namespace QuestSample.Store
 
             // 처음 목록은 앱이 시작할 때 받는다. 목록이 없으면 아무것도 할 수 없으니, 실패하면 다음 틱에 다시 받는다.
             clock.Now
-                .Where(_ => !_loaded)
+                .Where(_ => !_loaded && !_isRequesting.Value)
                 .SubscribeAwait((_, cancellationToken) => LoadAsync(cancellationToken), AwaitOperation.Drop)
                 .AddTo(_disposables);
 
@@ -59,6 +62,9 @@ namespace QuestSample.Store
         public ReadOnlyReactiveProperty<bool> HasReceivableMission { get; }
         public ReadOnlyReactiveProperty<bool> HasReceivablePass { get; }
         public ReadOnlyReactiveProperty<bool> HasAnyReceivable { get; }
+
+        /// <summary>서버 요청이 진행 중인지. 화면은 이 값이 true면 받기를 보내지 않는다(Store도 막는다).</summary>
+        public ReadOnlyReactiveProperty<bool> IsRequesting => _isRequesting;
 
         /// <summary>그 목록이 다음에 초기화되는 시각. 일일 임무는 매일, 시즌 패스는 매월 — ResetWatcher의 일정 하나를 같이 쓴다.</summary>
         public UnixTime NextReset(QuestGroup group, UnixTime now)
@@ -76,16 +82,18 @@ namespace QuestSample.Store
             return group == QuestGroup.DailyMission ? HasReceivableMission : HasReceivablePass;
         }
 
-        public async UniTask RefreshAsync(CancellationToken cancellationToken)
+        public UniTask RefreshAsync(CancellationToken cancellationToken)
         {
-            Accept(await _server.GetBoardAsync(cancellationToken));
+            BeginRequest();
+            return EndRequestAfter(FetchBoardAsync(cancellationToken));
         }
 
         // 받기는 화면 수명과 상관없이 끝까지 간다. 서버가 이미 처리했을 수 있으므로 응답은 반드시 반영한다.
         // 그래서 취소 토큰을 받지 않는다 — 앱이 끝날 때(Store가 사라질 때)만 멈춘다.
         public UniTask<ReceiveResponse> ReceiveAsync(QuestGroup group, string questId)
         {
-            return ReceiveCoreAsync(_server.ReceiveAsync(group, questId, _lifetime.Token));
+            BeginRequest();
+            return EndRequestAfter(ReceiveCoreAsync(() => _server.ReceiveAsync(group, questId, _lifetime.Token)));
         }
 
         // 모두 받기: 받을 수 있다고 보이는 Id만 모아 보낸다(QuestRules). 서버는 목록을 탐색하지 않고 보낸 Id만 검증해,
@@ -101,7 +109,8 @@ namespace QuestSample.Store
                 }
             }
 
-            return ReceiveCoreAsync(_server.ReceiveAllAsync(group, questIds, _lifetime.Token));
+            BeginRequest();
+            return EndRequestAfter(ReceiveCoreAsync(() => _server.ReceiveAllAsync(group, questIds, _lifetime.Token)));
         }
 
         public void Dispose()
@@ -111,22 +120,72 @@ namespace QuestSample.Store
             _lifetime.Dispose();
             _disposables.Dispose();
             _board.Dispose();
+            _isRequesting.Dispose();
         }
 
-        async UniTask<ReceiveResponse> ReceiveCoreAsync(UniTask<ReceiveResponse> request)
+        // 요청은 한 번에 하나. 화면이 IsRequesting을 보고 막으므로, 여기서 걸리면 부르는 쪽의 실수다.
+        // 플래그는 부르는 즉시(같은 프레임 안에서) 켠다 — 연타의 두 번째 입력도 바로 막힌다.
+        void BeginRequest()
+        {
+            if (_isRequesting.Value)
+            {
+                throw new InvalidOperationException("서버 요청이 이미 진행 중이다. IsRequesting을 보고 부른다.");
+            }
+
+            _isRequesting.Value = true;
+        }
+
+        async UniTask EndRequestAfter(UniTask request)
         {
             try
             {
-                var response = await request;
+                await request;
+            }
+            finally
+            {
+                _isRequesting.Value = false;
+            }
+        }
+
+        async UniTask<T> EndRequestAfter<T>(UniTask<T> request)
+        {
+            try
+            {
+                return await request;
+            }
+            finally
+            {
+                _isRequesting.Value = false;
+            }
+        }
+
+        async UniTask<ReceiveResponse> ReceiveCoreAsync(Func<UniTask<ReceiveResponse>> request)
+        {
+            try
+            {
+                var response = await Send(request);
                 Accept(response.Board);
                 return response;
             }
             catch (QuestServerException e) when (e.Error == QuestError.Expired)
             {
-                // 초기화가 지난 목록으로 요청했다. 목록을 새로 받고, 거절 이유는 그대로 올려 보낸다.
-                await RefreshAsync(_lifetime.Token);
+                // 초기화가 지난 목록으로 요청했다. 목록을 새로 받고, 거절 이유(Expired)는 그대로 올려 보낸다.
+                // 새로 받기마저 실패해도 사용자에게는 원래 이유를 알린다 — 통신 오류로 바꿔 보이지 않는다.
+                try
+                {
+                    await FetchBoardAsync(_lifetime.Token);
+                }
+                catch (QuestServerException)
+                {
+                }
+
                 throw;
             }
+        }
+
+        async UniTask FetchBoardAsync(CancellationToken cancellationToken)
+        {
+            Accept(await Send(() => _server.GetBoardAsync(cancellationToken)));
         }
 
         async ValueTask LoadAsync(CancellationToken cancellationToken)
@@ -141,9 +200,28 @@ namespace QuestSample.Store
             }
         }
 
-        // 서버 응답은 모두 여기로 들어온다.
+        // 서버 경계: 거절(QuestServerException)과 취소는 그대로 올리고, 그 밖의 전송 오류(타임아웃 · 연결 끊김 등)는
+        // 통신 오류로 바꾼다. 화면은 QuestServerException 하나만 보면 된다.
+        static async UniTask<T> Send<T>(Func<UniTask<T>> request)
+        {
+            try
+            {
+                return await request();
+            }
+            catch (Exception e) when (!(e is QuestServerException) && !(e is OperationCanceledException))
+            {
+                throw new QuestServerException(QuestError.Network, e);
+            }
+        }
+
+        // 서버 응답은 모두 여기로 들어온다. 리비전이 지금보다 낮으면 늦게 도착한 옛 스냅샷이라 버린다(같으면 같은 상태다).
         void Accept(QuestBoard board)
         {
+            if (_loaded && board.Revision < _board.Value.Revision)
+            {
+                return;
+            }
+
             // 서버 시각까지의 초기화는 이 응답에 이미 반영돼 있다. 목록을 통째로 바꾸니 신호는 필요 없고, 기준만 맞춘다.
             // 기준은 앞으로만 가므로(ResetWatcher), 기기 시계가 빨라도(보정하지 않는다) 같은 초기화를 되풀이하지 않는다.
             _resets.SyncToServer(board.ServerTime);
@@ -169,7 +247,7 @@ namespace QuestSample.Store
             _board.Value = board;
         }
 
-        // 보드에서 값을 뽑아 Store의 프로퍼티로 만든다. 값이 같으면 다시 알리지 않는다.
+        // 보드에서 값을 뽑아 Store의 프로퍼티로 만든다. 값이 같으면 다시 알리지 않는다(목록은 매번 새 배열이라 셀이 record로 비교한다).
         ReadOnlyReactiveProperty<T> FromBoard<T>(Func<QuestBoard, T> selector)
         {
             return _board.Select(selector).ToReadOnlyReactiveProperty().AddTo(_disposables);

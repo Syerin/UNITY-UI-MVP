@@ -35,7 +35,7 @@ namespace QuestSample.Tests
         IDisposable _watching;
         List<ResetSignal> _signals;
         FakeQuestServer _server;
-        CountingServer _counting;
+        TestServer _test;
         QuestStore _store;
 
         [SetUp]
@@ -88,7 +88,7 @@ namespace QuestSample.Tests
 
             Advance(UnixSpan.FromDays(1));
 
-            Assert.That(_counting.BoardRequests, Is.EqualTo(1)); // 처음 받은 한 번뿐
+            Assert.That(_test.BoardRequests, Is.EqualTo(1)); // 처음 받은 한 번뿐
             Assert.That(_store.DailyMissions.CurrentValue.All(quest => quest.State == QuestState.Progress), Is.True); // 받은 것까지 되돌렸다
             Assert.That(_signals.Count, Is.EqualTo(1)); // 클라가 낸 일일 신호 하나
             Assert.That(_signals[0].Daily && !_signals[0].Monthly, Is.True);
@@ -113,7 +113,7 @@ namespace QuestSample.Tests
             _clock.Set(Start + UnixSpan.FromHours(25));
             Ticks(10);
 
-            Assert.That(_counting.BoardRequests, Is.EqualTo(1)); // 처음 받은 한 번뿐
+            Assert.That(_test.BoardRequests, Is.EqualTo(1)); // 처음 받은 한 번뿐
             Assert.That(_store.HasReceivableMission.CurrentValue, Is.False); // 클라가 먼저 비웠다
 
             // 버튼으로 서버를 부르면 서버의 오늘 목록이 온다. 클라가 넘긴 초기화 기준은 되돌아가지 않아서,
@@ -153,7 +153,7 @@ namespace QuestSample.Tests
             Advance(nextSeason - _clock.Now.CurrentValue);
 
             // 서버에 묻지 않고 시즌 패스를 먼저 되돌렸다(월간 신호).
-            Assert.That(_counting.BoardRequests, Is.EqualTo(1));
+            Assert.That(_test.BoardRequests, Is.EqualTo(1));
             Assert.That(_signals.Count, Is.EqualTo(1));
             Assert.That(_signals[0].Monthly, Is.True);
             Assert.That(_store.SeasonPoints.CurrentValue, Is.EqualTo(0));
@@ -218,7 +218,7 @@ namespace QuestSample.Tests
             var response = Wait(_store.ReceiveAllAsync(QuestGroup.DailyMission));
 
             // 진행 중인 강화 · 모집은 보내지 않았다. 서버는 목록을 뒤지지 않고 이 두 개만 검증했다.
-            Assert.That(_counting.SentIds, Is.EqualTo(new[] { MissionId("login"), MissionId("battle") }));
+            Assert.That(_test.SentIds, Is.EqualTo(new[] { MissionId("login"), MissionId("battle") }));
             Assert.That(response.Granted.Count, Is.EqualTo(2));
             Assert.That(response.Rejected, Is.Empty);
             Assert.That(_store.SeasonPoints.CurrentValue, Is.EqualTo(250));
@@ -299,6 +299,82 @@ namespace QuestSample.Tests
             }
         }
 
+        [Test]
+        public void 진행_중인_요청이_있으면_화면을_다시_열어도_두번째_요청을_보내지_않는다()
+        {
+            _test.HoldReceives();
+            var first = _store.ReceiveAsync(QuestGroup.DailyMission, MissionId("login"));
+            Assert.That(_store.IsRequesting.CurrentValue, Is.True);
+
+            // Store는 앱 수명이라, 요청 중에 화면을 닫았다 다시 열어도 같은 요청이 진행 중이다. 두 번째 요청은 나가지 않는다.
+            Assert.Throws<InvalidOperationException>(() => _store.ReceiveAsync(QuestGroup.DailyMission, MissionId("login")));
+            Assert.Throws<InvalidOperationException>(() => _store.ReceiveAllAsync(QuestGroup.DailyMission));
+            Assert.That(_test.ReceiveRequests, Is.EqualTo(1));
+
+            // 응답이 오면 화면이 없어도 반영된다.
+            _test.Release();
+            var response = Wait(first);
+            Assert.That(response.Granted.Count, Is.EqualTo(1));
+            Assert.That(_store.SeasonPoints.CurrentValue, Is.EqualTo(100));
+            Assert.That(_store.IsRequesting.CurrentValue, Is.False);
+        }
+
+        [Test]
+        public void 늦게_도착한_옛_스냅샷은_무시한다()
+        {
+            var before = Wait(_server.GetBoardAsync(CancellationToken.None)); // 받기 전 리비전의 스냅샷
+            Wait(_store.ReceiveAsync(QuestGroup.DailyMission, MissionId("login"))); // 받기로 리비전이 오른다
+
+            _test.ReplayBoard(before);
+            Wait(_store.RefreshAsync(CancellationToken.None));
+
+            // 받기 전 스냅샷으로 되돌아가지 않았다.
+            Assert.That(_store.SeasonPoints.CurrentValue, Is.EqualTo(100));
+            Assert.That(_store.HasReceivableMission.CurrentValue, Is.False);
+        }
+
+        [Test]
+        public void 전송_오류는_통신_오류로_바꿔_알린다()
+        {
+            var before = _store.DailyMissions.CurrentValue;
+            _test.ThrowNext(new TimeoutException("응답 없음"));
+
+            var error = Assert.Throws<QuestServerException>(
+                () => Wait(_store.ReceiveAsync(QuestGroup.DailyMission, MissionId("login"))));
+
+            Assert.That(error.Error, Is.EqualTo(QuestError.Network));
+            Assert.That(error.InnerException is TimeoutException, Is.True);
+            Assert.That(_store.DailyMissions.CurrentValue, Is.SameAs(before));
+            Assert.That(_store.IsRequesting.CurrentValue, Is.False);
+        }
+
+        [Test]
+        public void 초기화가_지난_목록을_새로_받지_못해도_원래_이유를_알린다()
+        {
+            var staleId = MissionId("login");
+            _server.SkipDay();
+            _test.FailBoards(1, QuestError.Network); // 목록 새로 받기도 실패한다
+
+            var error = Assert.Throws<QuestServerException>(
+                () => Wait(_store.ReceiveAsync(QuestGroup.DailyMission, staleId)));
+
+            // 통신 오류로 바뀌지 않고 "초기화되어 받을 수 없다"가 그대로 간다.
+            Assert.That(error.Error, Is.EqualTo(QuestError.Expired));
+            Assert.That(_store.IsRequesting.CurrentValue, Is.False);
+        }
+
+        [Test]
+        public void 서버가_모르는_Id로_받으면_목록을_새로_받는다()
+        {
+            var unknownId = MissionId("login").Replace("login", "unknown");
+
+            var error = Assert.Throws<QuestServerException>(
+                () => Wait(_store.ReceiveAsync(QuestGroup.DailyMission, unknownId)));
+
+            Assert.That(error.Error, Is.EqualTo(QuestError.Expired));
+            Assert.That(_test.BoardRequests, Is.EqualTo(2)); // 처음 한 번 + 새로 받기
+        }
+
         // start 시각에 앱을 켠 것처럼 만든다. 게임의 AppLifetimeScope처럼 ResetWatcher가 시계를 구독한다.
         void Open(UnixTime start)
         {
@@ -310,9 +386,9 @@ namespace QuestSample.Tests
             _signals = new List<ResetSignal>();
             _resets.Reset += signal => _signals.Add(signal);
             _server = new FakeQuestServer(Options);
-            _counting = new CountingServer(_server);
+            _test = new TestServer(_server);
             // Store는 만들어지자마자 목록을 받는다. 가짜 서버는 지연이 0이라 여기서 끝난다.
-            _store = new QuestStore(_counting, _clock, _resets);
+            _store = new QuestStore(_test, _clock, _resets);
         }
 
         // 서버와 클라의 시계를 같이 옮긴다(시계가 맞는 기기).
@@ -350,38 +426,6 @@ namespace QuestSample.Tests
         static T Wait<T>(UniTask<T> task)
         {
             return task.GetAwaiter().GetResult();
-        }
-
-        /// <summary>목록 요청 횟수와 모두 받기로 보낸 Id를 기록한다. 나머지는 그대로 넘긴다.</summary>
-        sealed class CountingServer : IQuestServer
-        {
-            readonly IQuestServer _inner;
-
-            public CountingServer(IQuestServer inner)
-            {
-                _inner = inner;
-            }
-
-            public int BoardRequests { get; private set; }
-
-            public IReadOnlyList<string> SentIds { get; private set; } = Array.Empty<string>();
-
-            public UniTask<QuestBoard> GetBoardAsync(CancellationToken cancellationToken)
-            {
-                BoardRequests++;
-                return _inner.GetBoardAsync(cancellationToken);
-            }
-
-            public UniTask<ReceiveResponse> ReceiveAsync(QuestGroup group, string questId, CancellationToken cancellationToken)
-            {
-                return _inner.ReceiveAsync(group, questId, cancellationToken);
-            }
-
-            public UniTask<ReceiveResponse> ReceiveAllAsync(QuestGroup group, IReadOnlyList<string> questIds, CancellationToken cancellationToken)
-            {
-                SentIds = questIds.ToArray();
-                return _inner.ReceiveAllAsync(group, questIds, cancellationToken);
-            }
         }
     }
 }

@@ -56,6 +56,13 @@ namespace QuestSample.Demo
         async ValueTask ReportAsync(string missionKey, string done, CancellationToken cancellationToken)
         {
             _server.AddProgress(missionKey, 1);
+            if (_store.IsRequesting.CurrentValue)
+            {
+                // 진행 중인 요청의 응답에 이 기록이 담겨 온다(가짜 서버는 응답할 때 스냅샷을 만든다). 따로 묻지 않는다.
+                _view.SetStatus(done);
+                return;
+            }
+
             try
             {
                 await _store.RefreshAsync(cancellationToken);

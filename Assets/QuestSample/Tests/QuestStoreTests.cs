@@ -21,7 +21,7 @@ namespace QuestSample.Tests
     public sealed class QuestStoreTests
     {
         // 일일 초기화(한국 시간 오전 10시) 정각에서 시작한다. 다음 초기화는 24시간 뒤다.
-        // 2026-10-01은 목요일이고 1일이라, 이 시각은 일간 · 주간 · 월간 초기화가 겹치는 시각이기도 하다.
+        // 2026-10-01은 1일이라, 이 시각은 일간 · 월간 초기화가 겹치는 시각이기도 하다.
         static readonly UnixTime Start = KstTime(2026, 10, 1, 10);
 
         static readonly UnixSpan Tick = Clock100ms.TickInterval;
@@ -91,7 +91,7 @@ namespace QuestSample.Tests
             Assert.That(_counting.BoardRequests, Is.EqualTo(1)); // 처음 받은 한 번뿐
             Assert.That(_store.DailyMissions.CurrentValue.All(quest => quest.State == QuestState.Progress), Is.True); // 받은 것까지 되돌렸다
             Assert.That(_signals.Count, Is.EqualTo(1)); // 클라가 낸 일일 신호 하나
-            Assert.That(_signals[0].Daily && !_signals[0].Weekly && !_signals[0].Monthly && !_signals[0].FromServer, Is.True);
+            Assert.That(_signals[0].Daily && !_signals[0].Monthly, Is.True);
             Assert.That(_signals[0].At, Is.EqualTo(KstTime(2026, 10, 2, 10)));
         }
 
@@ -256,9 +256,9 @@ namespace QuestSample.Tests
         }
 
         [Test]
-        public void 일간_주간_월간이_겹치면_한_신호로_받는다()
+        public void 일간_월간이_겹치면_한_신호로_받는다()
         {
-            // 2026-10-01 10시는 일간 · 주간(목요일) · 월간(1일) 초기화가 겹친다. 그 한 틱 전에 앱을 켠다.
+            // 2026-10-01 10시는 일간 · 월간(1일) 초기화가 겹친다. 그 한 틱 전에 앱을 켠다.
             TearDown();
             Open(Start - Tick);
 
@@ -266,8 +266,7 @@ namespace QuestSample.Tests
 
             Assert.That(_signals.Count, Is.EqualTo(1));
             var signal = _signals[0];
-            Assert.That(signal.Daily && signal.Weekly && signal.Monthly, Is.True);
-            Assert.That(signal.FromServer, Is.False);
+            Assert.That(signal.Daily && signal.Monthly, Is.True);
             Assert.That(signal.At, Is.EqualTo(Start));
             Assert.That(_store.HasReceivableMission.CurrentValue, Is.False); // 일일 임무는 클라가 먼저 비웠다
         }

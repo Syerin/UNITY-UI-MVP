@@ -5,15 +5,12 @@ namespace QuestSample.Timing
 {
     /// <summary>
     /// UnixTime을 한 시간대의 달력으로 읽는 확장. offset을 주지 않으면 한국 표준시(UTC+9)로 읽는다.
-    /// 요일은 월요일부터 센다(Weekday). 요일 · 시각 · 다음 일간/주간 초기화를 틱 정수 계산만으로 구한다(DateTime 변환 없음).
+    /// 날짜 번호 · 하루 중 시각 · 다음 일간 초기화는 틱 정수 계산만으로 구하고, 길이가 들쭉날쭉한 달만 DateTime의 달력을 빌린다.
     /// </summary>
     public static class UnixTimeExtensions
     {
         // 한국 표준시 UTC+9. 서머타임이 없어서 고정 오프셋으로 충분하다.
         public static readonly UnixSpan Kst = UnixSpan.FromHours(9);
-
-        // 1970-01-01(유닉스 시간 0)은 목요일이다.
-        const int EpochWeekday = (int)Weekday.Thursday; // 3
 
         // 그 시간대 기준 날짜 번호. 1970-01-01 = 0이고 하루에 1씩 는다.
         public static long DayNumber(this UnixTime time, UnixSpan? offset = null)
@@ -27,34 +24,10 @@ namespace QuestSample.Timing
             return new UnixSpan(FloorMod(LocalTick(time, offset), UnixSpan.TickPerDay));
         }
 
-        // 오늘이 무슨 요일인지 (월=0 … 일=6)
-        public static Weekday GetWeekday(this UnixTime time, UnixSpan? offset = null)
-        {
-            return (Weekday)FloorMod(time.DayNumber(offset) + EpochWeekday, UnixSpan.DaysPerWeek);
-        }
-
-        // 지금이 몇 시인지 (0 ~ 23)
-        public static int GetHour(this UnixTime time, UnixSpan? offset = null)
-        {
-            return (int)time.TimeOfDay(offset).TotalHours;
-        }
-
         // 그날 0시
         public static UnixTime StartOfDay(this UnixTime time, UnixSpan? offset = null)
         {
             return time - time.TimeOfDay(offset);
-        }
-
-        // 이번 주 월요일 0시. 월요일이 0이라 요일 번호만큼 날을 빼면 된다.
-        public static UnixTime StartOfWeek(this UnixTime time, UnixSpan? offset = null)
-        {
-            return time.StartOfDay(offset) - UnixSpan.FromDays((int)time.GetWeekday(offset));
-        }
-
-        // 오늘부터 target 요일까지의 요일 차이 (0 ~ 6). 오늘이 그 요일이면 0.
-        public static int DaysUntil(this UnixTime time, Weekday target, UnixSpan? offset = null)
-        {
-            return (int)FloorMod((int)target - (int)time.GetWeekday(offset), UnixSpan.DaysPerWeek);
         }
 
         // 다음 일간 초기화: 매일 hour시 minute분. 지금이 딱 그 시각이면 이미 초기화된 것으로 보고 다음 날.
@@ -64,22 +37,10 @@ namespace QuestSample.Timing
             return today > time ? today : today + UnixSpan.FromDays(1);
         }
 
-        // 다음 주간 초기화: 매주 day요일 hour시 minute분. 이번 주 그 시각이 지났으면(정각 포함) 다음 주.
-        public static UnixTime NextWeekly(this UnixTime time, Weekday day, int hour, int minute = 0, UnixSpan? offset = null)
-        {
-            var thisWeek = time.StartOfWeek(offset) + UnixSpan.FromDays((int)day) + ClockTime(hour, minute);
-            return thisWeek > time ? thisWeek : thisWeek + UnixSpan.FromWeeks(1);
-        }
-
         // 지금 기간이 시작된 시각(가장 최근 초기화). 받은 시각이 이것보다 이르면 초기화 전에 받은 것이다.
         public static UnixTime LastDaily(this UnixTime time, int hour, int minute = 0, UnixSpan? offset = null)
         {
             return time.NextDaily(hour, minute, offset) - UnixSpan.FromDays(1);
-        }
-
-        public static UnixTime LastWeekly(this UnixTime time, Weekday day, int hour, int minute = 0, UnixSpan? offset = null)
-        {
-            return time.NextWeekly(day, hour, minute, offset) - UnixSpan.FromWeeks(1);
         }
 
         // 지금 달의 월간 초기화가 지났으면 그 시각, 아니면 지난달의 것. day는 모든 달에 있는 1 ~ 28만 받는다.

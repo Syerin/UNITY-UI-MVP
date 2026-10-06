@@ -30,7 +30,7 @@ namespace QuestSample.App
             // 시계는 하나: 100ms마다 지금을 한 번 읽는다. 초 단위로 세는 것(초기화 감시, 남은 시간 표시)은 모두 이것을 구독한다.
             builder.Register(_ => new Clock100ms(UnixTime.Now), Lifetime.Singleton);
 
-            // 초기화 판단은 ResetWatcher 하나: 매일 한국 시간 10시, 주간은 목요일, 월간은 1일. 시계를 구독해 틱마다 확인한다.
+            // 초기화 판단은 ResetWatcher 하나: 매일 한국 시간 10시, 월간은 1일 10시. 시계를 구독해 틱마다 확인한다.
             builder.RegisterInstance(new ResetWatcher(ResetSchedule.Default));
             builder.RegisterBuildCallback(resolver =>
             {

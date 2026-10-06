@@ -13,7 +13,7 @@ namespace QuestSample.Store
     /// <summary>
     /// 앱이 살아 있는 동안 하나. 상태는 서버의 성공 응답이 정한다.
     /// 클라가 먼저 하는 일은 초기화 하나뿐이고(일일 임무는 매일, 시즌 패스는 매월), 그것도 다음 서버 응답이 덮어쓴다. 버튼 없이는 서버에 묻지 않는다.
-    /// 초기화 시각을 넘었는지는 ResetWatcher 하나가 정한다 — 일간 · 주간 · 월간이 겹쳐도 한 신호로 온다.
+    /// 초기화 시각을 넘었는지는 ResetWatcher 하나가 정한다 — 일간 · 월간이 겹쳐도 한 신호로 온다.
     /// 화면은 여기서 만든 값을 구독하기만 하고, 받을 수 있는지 다시 계산하지 않는다.
     /// </summary>
     public sealed class QuestStore : IDisposable
@@ -146,15 +146,7 @@ namespace QuestSample.Store
         {
             // 서버 시각까지의 초기화는 이 응답에 이미 반영돼 있다. 목록을 통째로 바꾸니 신호는 필요 없고, 기준만 맞춘다.
             // 기준은 앞으로만 가므로(ResetWatcher), 기기 시계가 빨라도(보정하지 않는다) 같은 초기화를 되풀이하지 않는다.
-            if (_loaded)
-            {
-                _resets.ApplyServer(false, false, false, board.ServerTime);
-            }
-            else
-            {
-                _resets.Begin(board.ServerTime);
-            }
-
+            _resets.SyncToServer(board.ServerTime);
             _loaded = true;
             _board.Value = board;
         }
@@ -162,12 +154,7 @@ namespace QuestSample.Store
         // 초기화 시각을 넘겼다는 신호. 서버에 묻지 않고 먼저 되돌린다 — 일일 임무는 일간, 시즌 패스는 월간 신호로.
         void OnReset(ResetSignal signal)
         {
-            if (signal.FromServer)
-            {
-                return; // 서버가 알린 초기화는 응답이 이미 목록을 덮어썼다.
-            }
-
-            // 겹쳐 와도(예: 1일 10시) 목록은 한 번만 바꾼다. 주간 주기로 초기화되는 컨텐츠는 이 샘플에 없다.
+            // 겹쳐 와도(예: 1일 10시) 목록은 한 번만 바꾼다.
             var board = _board.Value;
             if (signal.Daily)
             {

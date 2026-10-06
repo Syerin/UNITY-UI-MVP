@@ -18,7 +18,9 @@ namespace QuestSample.Timing
 
         public static readonly UnixTime Epoch = new UnixTime(0L);
 
-        // 지금을 읽는 곳은 이 TimeProvider 하나다. 기본은 기기 시각이고, 테스트는 가짜 시계로, 서버 시각을 맞출 때는 그 보정을 담은 TimeProvider로 바꾼다.
+        // 지금을 읽는 곳은 이 TimeProvider 하나다. 기본은 기기 시각이고, 테스트는 가짜 시계로 바꾼다.
+        // 서버 시각에 맞추려면 그 보정을 담은 TimeProvider로 바꾸면 된다(이 샘플은 보정하지 않는다 — README "트레이드오프").
+        // 정적인 이유: "지금"은 값 타입이 어디서나 읽는 값이라 생성자로 넘기기 어렵고, 바꾸는 쪽은 앱 시작과 테스트뿐이다.
         public static TimeProvider TimeProvider { get; set; } = System.TimeProvider.System;
 
         // 지금. DateTime.UtcNow를 직접 읽지 않고 TimeProvider를 거친다 — 바꾸면 게임 전체의 지금이 같이 바뀐다.
@@ -55,30 +57,8 @@ namespace QuestSample.Timing
             return (Tick - (remainder < 0 ? remainder + UnixSpan.TickPerMillisecond : remainder)) / UnixSpan.TickPerMillisecond;
         }
 
-        // UTC 기준 DateTime
+        // UTC 기준 DateTime. 달력 계산(월 단위)처럼 DateTime이 필요한 곳에서만 쓴다.
         public DateTime DateTime => new DateTime((Tick + EpochOffset) * DateTimeTicksPerTick, DateTimeKind.Utc);
-
-        // 기기 시간대 기준 DateTime. 화면에 보여 줄 때 쓴다.
-        public DateTime ToLocalDateTime()
-        {
-            return DateTime.ToLocalTime();
-        }
-
-        // 아래 문자열은 모두 UTC 기준이다. 기기 시간으로 보여 주려면 ToLocalDateTime()으로 포맷한다.
-        //2014년
-        public string YYYY => DateTime.Year.ToString("0000", CultureInfo.InvariantCulture);
-        //01월
-        public string MM => DateTime.Month.ToString("00", CultureInfo.InvariantCulture);
-        //01일
-        public string DD => DateTime.Day.ToString("00", CultureInfo.InvariantCulture);
-        //00시~23시
-        public string HH => DateTime.Hour.ToString("00", CultureInfo.InvariantCulture);
-        //00분~59분
-        public string mm => DateTime.Minute.ToString("00", CultureInfo.InvariantCulture);
-        //00초~59초
-        public string ss => DateTime.Second.ToString("00", CultureInfo.InvariantCulture);
-        //000~999 밀리초
-        public string SSS => DateTime.Millisecond.ToString("000", CultureInfo.InvariantCulture);
 
         // 시점 + 길이 = 시점. 예: UnixTime.Now + UnixSpan.FromMinutes(30)
         public static UnixTime operator +(UnixTime time, UnixSpan span)
@@ -109,7 +89,7 @@ namespace QuestSample.Timing
         public override int GetHashCode() => Tick.GetHashCode();
         public int CompareTo(UnixTime other) => Tick.CompareTo(other.Tick);
 
-        // 예: 2014-01-01T00:00:00.000Z
+        // 예: 2026-10-01T01:00:00.000Z
         public override string ToString()
         {
             return DateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture);

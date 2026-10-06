@@ -18,20 +18,11 @@ namespace QuestSample.Timing
         // 1분 = 60초 * 1,000 틱
         public const long TickPerMinute = 60 * TickPerSecond; // 60,000L
 
-        // 1000초 = 1,000초 * 1,000 틱
-        public const long TickPer1000Seconds = 1000 * TickPerSecond; // 1,000,000L
-
         // 1시간 = 3,600초 * 1,000 틱
         public const long TickPerHour = 3600 * TickPerSecond; // 3,600,000L
 
         // 1일 = 86,400초 * 1,000 틱
         public const long TickPerDay = 86400 * TickPerSecond; // 86,400,000L
-
-        // 1주 = 7일
-        public const int DaysPerWeek = 7;
-
-        // 1주 = 7일 * 86,400,000 틱
-        public const long TickPerWeek = DaysPerWeek * TickPerDay; // 604,800,000L
 
         public static readonly UnixSpan Zero = new UnixSpan(0L);
 
@@ -48,7 +39,6 @@ namespace QuestSample.Timing
         public static UnixSpan FromMinutes(long minutes) => new UnixSpan(minutes * TickPerMinute);
         public static UnixSpan FromHours(long hours) => new UnixSpan(hours * TickPerHour);
         public static UnixSpan FromDays(long days) => new UnixSpan(days * TickPerDay);
-        public static UnixSpan FromWeeks(long weeks) => new UnixSpan(weeks * TickPerWeek);
 
         // 전체를 한 단위로 센 값. 모자라는 부분은 0 쪽으로 버린다. 예: 90분 → TotalHours 1
         public long TotalMilliseconds => Ticks / TickPerMillisecond;

@@ -7,5 +7,5 @@ namespace QuestSample.Domain
         SeasonPoint,
     }
 
-    public sealed record Reward(RewardKind Kind, int Amount);
+    public sealed record Reward(RewardKind Kind, long Amount);
 }

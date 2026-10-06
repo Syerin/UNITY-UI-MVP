@@ -19,7 +19,7 @@ namespace QuestSample.Timing
         public static readonly UnixTime Epoch = new UnixTime(0L);
 
         // 지금을 읽는 곳은 이 TimeProvider 하나다. 기본은 기기 시각이고, 테스트는 가짜 시계로 바꾼다.
-        // 서버 시각에 맞추려면 그 보정을 담은 TimeProvider로 바꾸면 된다(이 샘플은 보정하지 않는다 — README "트레이드오프").
+        // 서버 시각에 맞추려면 그 보정을 담은 TimeProvider로 바꾸면 된다(이 샘플은 보정하지 않는다 — README "설계 결정").
         // 정적인 이유: "지금"은 값 타입이 어디서나 읽는 값이라 생성자로 넘기기 어렵고, 바꾸는 쪽은 앱 시작과 테스트뿐이다.
         public static TimeProvider TimeProvider { get; set; } = System.TimeProvider.System;
 

@@ -41,6 +41,7 @@ namespace QuestSample.App
 
             var latency = UnixSpan.FromMilliseconds((long)(latencySeconds * 1000));
             builder.RegisterInstance(new FakeQuestServer(new FakeQuestServerOptions(latency))).AsSelf().As<IQuestServer>();
+            builder.RegisterInstance(QuestStoreOptions.Default);
             builder.Register<QuestStore>(Lifetime.Singleton);
             builder.RegisterInstance(new QuestScreenNavigator(this, Resources.Load<QuestScreenLifetimeScope>(QuestScreenPath)));
 

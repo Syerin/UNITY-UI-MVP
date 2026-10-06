@@ -41,6 +41,9 @@ namespace QuestSample.Demo
                 _server.SkipDay();
                 _view.SetStatus("다음 날로 넘겼습니다. 화면은 아직 어제 목록입니다. 받기를 눌러 보세요");
             }).AddTo(_disposables);
+            _store.RefreshRetryScheduled
+                .Subscribe(delay => _view.SetStatus(QuestFormatter.RetryText(delay)))
+                .AddTo(_disposables);
             _view.OnFailNext.Subscribe(_ =>
             {
                 _server.FailNextRequest(QuestError.Network);

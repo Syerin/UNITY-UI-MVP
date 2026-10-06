@@ -75,6 +75,11 @@ namespace QuestSample.Presentation
                 .SubscribeAwait(HandleReceiveAsync, AwaitOperation.Drop)
                 .AddTo(_disposables);
 
+            // 목록 받기가 실패해 다시 시도를 예약했으면 알린다.
+            _store.RefreshRetryScheduled
+                .Subscribe(delay => _view.Toast.Show(QuestFormatter.RetryText(delay)))
+                .AddTo(_disposables);
+
             _view.OnCloseClicked.Subscribe(_ => _navigator.Close()).AddTo(_disposables);
         }
 

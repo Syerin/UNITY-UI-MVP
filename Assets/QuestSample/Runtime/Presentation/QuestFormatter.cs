@@ -65,6 +65,13 @@ namespace QuestSample.Presentation
             }
         }
 
+        // 목록 받기가 실패했을 때. 다시 시도까지 남은 초는 올림한다(1.5초 → 2초).
+        public static string RetryText(UnixSpan delay)
+        {
+            var seconds = (delay.Ticks + UnixSpan.TickPerSecond - 1) / UnixSpan.TickPerSecond;
+            return "목록을 받지 못했습니다. " + Number(seconds) + "초 뒤 다시 시도합니다";
+        }
+
         public static string SeasonPointsText(long points)
         {
             return "시즌 포인트 " + Number(points);

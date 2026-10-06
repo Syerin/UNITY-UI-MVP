@@ -14,24 +14,35 @@ namespace QuestSample.Store
     /// 앱이 살아 있는 동안 하나. 상태는 서버의 성공 응답이 정한다.
     /// 서버 요청은 한 번에 하나다(받기 · 모두 받기 · 목록 받기). 화면을 닫았다 다시 열어도, 진행 중인 요청이 끝나기 전에는 다음 요청을 보내지 않는다.
     /// 응답은 리비전이 지금보다 낮으면(늦게 도착한 옛 스냅샷) 버린다.
-    /// 클라가 먼저 하는 일은 초기화 하나뿐이고(일일 임무는 매일, 시즌 패스는 매월), 그것도 다음 서버 응답이 덮어쓴다.
+    /// 목록 받기가 실패하면 1초부터 두 배씩, 최대 30초 간격으로 다시 받는다(지터 포함).
+    /// 클라가 먼저 하는 일은 초기화 하나뿐이고(일일 임무는 매일, 시즌 패스는 매월), 초기화 시각에서 0~60초 무작위로 늦춰
+    /// 목록을 한 번 다시 받아 서버 규칙(접속하면 접속 임무 완료 등)으로 바로잡는다.
     /// 초기화 시각을 넘었는지는 ResetWatcher 하나가 정한다 — 일간 · 월간이 겹쳐도 한 신호로 온다.
     /// 화면은 여기서 만든 값을 구독하기만 하고, 받을 수 있는지 다시 계산하지 않는다.
     /// </summary>
     public sealed class QuestStore : IDisposable
     {
         readonly IQuestServer _server;
+        readonly Clock100ms _clock;
         readonly ResetWatcher _resets;
+        readonly QuestStoreOptions _options;
         readonly ReactiveProperty<QuestBoard> _board = new ReactiveProperty<QuestBoard>(QuestBoard.Empty);
         readonly ReactiveProperty<bool> _isRequesting = new ReactiveProperty<bool>(false);
+        readonly Subject<UnixSpan> _refreshRetryScheduled = new Subject<UnixSpan>();
         readonly CancellationTokenSource _lifetime = new CancellationTokenSource();
         readonly CompositeDisposable _disposables = new CompositeDisposable();
         bool _loaded;
 
-        public QuestStore(IQuestServer server, Clock100ms clock, ResetWatcher resets)
+        // 목록을 다시 받을 시각. 처음 받기, 실패 뒤 재시도, 초기화 뒤 바로잡기가 모두 이것 하나로 예약된다.
+        UnixTime? _refreshDueAt;
+        int _refreshFailures;
+
+        public QuestStore(IQuestServer server, Clock100ms clock, ResetWatcher resets, QuestStoreOptions options)
         {
             _server = server;
+            _clock = clock;
             _resets = resets;
+            _options = options;
 
             DailyMissions = FromBoard(board => board.QuestsOf(QuestGroup.DailyMission));
             PassTiers = FromBoard(board => board.QuestsOf(QuestGroup.SeasonPass));
@@ -45,14 +56,15 @@ namespace QuestSample.Store
                 .ToReadOnlyReactiveProperty()
                 .AddTo(_disposables);
 
-            // 처음 목록은 앱이 시작할 때 받는다. 목록이 없으면 아무것도 할 수 없으니, 실패하면 다음 틱에 다시 받는다.
+            // 예약한 목록 받기는 시계가 틱마다 확인해 보낸다. 처음 목록은 앱이 시작할 때 바로 받는다(구독하자마자 지금 시각이 온다).
+            _refreshDueAt = clock.Now.CurrentValue;
             clock.Now
-                .Where(_ => !_loaded && !_isRequesting.Value)
-                .SubscribeAwait((_, cancellationToken) => LoadAsync(cancellationToken), AwaitOperation.Drop)
+                .Where(now => _refreshDueAt.HasValue && now >= _refreshDueAt.Value && !_isRequesting.Value)
+                .SubscribeAwait((_, cancellationToken) => RefreshScheduledAsync(cancellationToken), AwaitOperation.Drop)
                 .AddTo(_disposables);
 
-            // 그 뒤로는 버튼 없이 서버에 묻지 않는다. 초기화 시각을 넘기면 ResetWatcher가 신호를 내고,
-            // 클라에서 먼저 초기화한 뒤 다음 서버 응답이 덮어쓴다. 화면이 닫혀 있어도 한다 — 로비 레드닷이 맞아야 하므로.
+            // 그 밖에는 버튼 없이 서버에 묻지 않는다. 초기화 시각을 넘기면 ResetWatcher가 신호를 내고, 클라에서 먼저 되돌린 뒤
+            // 잠시 뒤 한 번 다시 받는다. 화면이 닫혀 있어도 한다 — 로비 레드닷이 맞아야 하므로.
             _resets.Reset += OnReset;
         }
 
@@ -65,6 +77,9 @@ namespace QuestSample.Store
 
         /// <summary>서버 요청이 진행 중인지. 화면은 이 값이 true면 받기를 보내지 않는다(Store도 막는다).</summary>
         public ReadOnlyReactiveProperty<bool> IsRequesting => _isRequesting;
+
+        /// <summary>목록 받기가 실패해 다시 시도를 예약했을 때, 그때까지 기다릴 시간이 온다.</summary>
+        public Observable<UnixSpan> RefreshRetryScheduled => _refreshRetryScheduled;
 
         /// <summary>그 목록이 다음에 초기화되는 시각. 일일 임무는 매일, 시즌 패스는 매월 — ResetWatcher의 일정 하나를 같이 쓴다.</summary>
         public UnixTime NextReset(QuestGroup group, UnixTime now)
@@ -121,6 +136,7 @@ namespace QuestSample.Store
             _disposables.Dispose();
             _board.Dispose();
             _isRequesting.Dispose();
+            _refreshRetryScheduled.Dispose();
         }
 
         // 요청은 한 번에 하나. 화면이 IsRequesting을 보고 막으므로, 여기서 걸리면 부르는 쪽의 실수다.
@@ -170,13 +186,14 @@ namespace QuestSample.Store
             catch (QuestServerException e) when (e.Error == QuestError.Expired)
             {
                 // 초기화가 지난 목록으로 요청했다. 목록을 새로 받고, 거절 이유(Expired)는 그대로 올려 보낸다.
-                // 새로 받기마저 실패해도 사용자에게는 원래 이유를 알린다 — 통신 오류로 바꿔 보이지 않는다.
+                // 새로 받기마저 실패하면 예약해 두고(다음 틱부터, 실패하면 간격을 늘려) 사용자에게는 원래 이유를 알린다.
                 try
                 {
                     await FetchBoardAsync(_lifetime.Token);
                 }
                 catch (QuestServerException)
                 {
+                    ScheduleRefresh(_clock.Now.CurrentValue);
                 }
 
                 throw;
@@ -188,7 +205,8 @@ namespace QuestSample.Store
             Accept(await Send(() => _server.GetBoardAsync(cancellationToken)));
         }
 
-        async ValueTask LoadAsync(CancellationToken cancellationToken)
+        // 예약한 목록 받기. 실패하면 간격을 늘려 다시 예약하고 알린다(화면은 토스트, 데모 패널은 상태 문구).
+        async ValueTask RefreshScheduledAsync(CancellationToken cancellationToken)
         {
             try
             {
@@ -196,7 +214,19 @@ namespace QuestSample.Store
             }
             catch (QuestServerException)
             {
-                // 다음 틱에 다시 받는다.
+                _refreshFailures++;
+                var delay = _options.RetryDelay(_refreshFailures);
+                _refreshDueAt = _clock.Now.CurrentValue + delay;
+                _refreshRetryScheduled.OnNext(delay);
+            }
+        }
+
+        // 이미 더 이른 예약이 있으면 그대로 둔다.
+        void ScheduleRefresh(UnixTime at)
+        {
+            if (!_refreshDueAt.HasValue || at < _refreshDueAt.Value)
+            {
+                _refreshDueAt = at;
             }
         }
 
@@ -217,6 +247,10 @@ namespace QuestSample.Store
         // 서버 응답은 모두 여기로 들어온다. 리비전이 지금보다 낮으면 늦게 도착한 옛 스냅샷이라 버린다(같으면 같은 상태다).
         void Accept(QuestBoard board)
         {
+            // 서버에서 목록을 받았으니(받기 응답도 전체 목록이다) 예약해 둔 다시 받기는 필요 없다.
+            _refreshDueAt = null;
+            _refreshFailures = 0;
+
             if (_loaded && board.Revision < _board.Value.Revision)
             {
                 return;
@@ -245,6 +279,10 @@ namespace QuestSample.Store
             }
 
             _board.Value = board;
+
+            // 클라는 서버 규칙(접속하면 접속 임무 완료 등)을 모르니, 목록을 한 번 다시 받아 바로잡는다.
+            // 모든 기기가 초기화 시각에 한꺼번에 묻지 않도록 초기화 시각에서 0~60초 사이로 퍼뜨린다(이미 지났으면 바로).
+            ScheduleRefresh(signal.At + _options.RefetchDelay());
         }
 
         // 보드에서 값을 뽑아 Store의 프로퍼티로 만든다. 값이 같으면 다시 알리지 않는다(목록은 매번 새 배열이라 셀이 record로 비교한다).

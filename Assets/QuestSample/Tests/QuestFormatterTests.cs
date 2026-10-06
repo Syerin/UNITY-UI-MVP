@@ -61,6 +61,13 @@ namespace QuestSample.Tests
             Assert.That(QuestFormatter.CountdownText(QuestGroup.DailyMission, now + left, now), Is.EqualTo(expected));
         }
 
+        [Test]
+        public void 다시_시도_문구는_남은_초를_올림한다()
+        {
+            Assert.That(QuestFormatter.RetryText(UnixSpan.FromMilliseconds(1500)), Is.EqualTo("목록을 받지 못했습니다. 2초 뒤 다시 시도합니다"));
+            Assert.That(QuestFormatter.RetryText(UnixSpan.FromSeconds(30)), Is.EqualTo("목록을 받지 못했습니다. 30초 뒤 다시 시도합니다"));
+        }
+
         static Quest Quest(string title, long progress, long target, bool received)
         {
             return new Quest(title, title, progress, target, received, new Reward(RewardKind.Gold, 1));

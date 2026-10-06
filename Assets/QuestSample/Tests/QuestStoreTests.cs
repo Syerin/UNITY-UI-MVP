@@ -28,6 +28,10 @@ namespace QuestSample.Tests
 
         static readonly FakeQuestServerOptions Options = new FakeQuestServerOptions(UnixSpan.Zero);
 
+        // 재시도 1초부터 두 배씩 최대 30초, 초기화 뒤 다시 받기는 0~60초 중 30초(무작위 0.5)로 고정한다.
+        static readonly QuestStoreOptions StoreOptions = new QuestStoreOptions(
+            UnixSpan.FromSeconds(1), UnixSpan.FromSeconds(30), UnixSpan.FromSeconds(60), () => 0.5);
+
         TimeProvider _previousTime;
         FakeTimeProvider _serverTime;
         Clock100ms _clock;
@@ -82,17 +86,30 @@ namespace QuestSample.Tests
         }
 
         [Test]
-        public void 초기화_시각이_지나면_서버에_묻지_않고_클라에서_먼저_초기화한다()
+        public void 초기화_시각이_지나면_클라에서_먼저_되돌리고_잠시_뒤_한_번_다시_받아_바로잡는다()
         {
             Wait(_store.ReceiveAsync(QuestGroup.DailyMission, MissionId("login")));
 
             Advance(UnixSpan.FromDays(1));
 
-            Assert.That(_test.BoardRequests, Is.EqualTo(1)); // 처음 받은 한 번뿐
-            Assert.That(_store.DailyMissions.CurrentValue.All(quest => quest.State == QuestState.Progress), Is.True); // 받은 것까지 되돌렸다
-            Assert.That(_signals.Count, Is.EqualTo(1)); // 클라가 낸 일일 신호 하나
+            // 서버에 묻지 않고 받은 것까지 먼저 되돌렸다. 클라는 서버 규칙(접속하면 완료)을 몰라 레드닷이 꺼져 있다.
+            Assert.That(_test.BoardRequests, Is.EqualTo(1));
+            Assert.That(_store.DailyMissions.CurrentValue.All(quest => quest.State == QuestState.Progress), Is.True);
+            Assert.That(_store.HasReceivableMission.CurrentValue, Is.False);
+            Assert.That(_signals.Count, Is.EqualTo(1));
             Assert.That(_signals[0].Daily && !_signals[0].Monthly, Is.True);
             Assert.That(_signals[0].At, Is.EqualTo(KstTime(2026, 10, 2, 10)));
+
+            // 초기화 시각에서 30초 뒤(기기마다 무작위로 퍼뜨린 지연) 한 번 다시 받아, 새 날의 접속 임무 완료로 바로잡는다.
+            Advance(UnixSpan.FromSeconds(30) - Tick);
+            Assert.That(_test.BoardRequests, Is.EqualTo(1));
+            Advance(Tick);
+            Assert.That(_test.BoardRequests, Is.EqualTo(2));
+            Assert.That(_store.HasReceivableMission.CurrentValue, Is.True);
+
+            // 그 뒤로는 버튼 없이 묻지 않는다.
+            Advance(UnixSpan.FromHours(1));
+            Assert.That(_test.BoardRequests, Is.EqualTo(2));
         }
 
         [Test]
@@ -107,21 +124,21 @@ namespace QuestSample.Tests
         }
 
         [Test]
-        public void 기기_시계가_빨라도_서버에_되풀이해_묻지_않는다()
+        public void 기기_시계가_빨라도_목록은_한_번만_다시_받고_되풀이하지_않는다()
         {
             // 기기 시각은 보정하지 않는다. 기기가 25시간 빠르면 서버는 아직 오늘인데 클라는 초기화 시각을 넘긴다.
             _clock.Set(Start + UnixSpan.FromHours(25));
-            Ticks(10);
+            Ticks(1);
 
-            Assert.That(_test.BoardRequests, Is.EqualTo(1)); // 처음 받은 한 번뿐
-            Assert.That(_store.HasReceivableMission.CurrentValue, Is.False); // 클라가 먼저 비웠다
+            // 클라가 먼저 비운 뒤, 초기화 시각(기기 기준 1시간 전)에서 30초가 이미 지났으니 바로 한 번 다시 받는다.
+            // 서버의 오늘 목록(접속 임무 완료)이 온다.
+            Assert.That(_test.BoardRequests, Is.EqualTo(2));
+            Assert.That(_store.HasReceivableMission.CurrentValue, Is.True);
 
-            // 버튼으로 서버를 부르면 서버의 오늘 목록이 온다. 클라가 넘긴 초기화 기준은 되돌아가지 않아서,
-            // 틱이 계속 돌아도 같은 초기화로 서버 목록을 다시 비우지 않는다.
-            Wait(_store.RefreshAsync(CancellationToken.None));
-            Ticks(10);
-
-            Assert.That(_store.HasReceivableMission.CurrentValue, Is.True); // 서버의 목록(접속 임무 완료)이 그대로다
+            // 클라가 넘긴 초기화 기준은 되돌아가지 않아서, 틱이 계속 돌아도 같은 초기화로 다시 비우거나 묻지 않는다.
+            Ticks(600);
+            Assert.That(_test.BoardRequests, Is.EqualTo(2));
+            Assert.That(_store.HasReceivableMission.CurrentValue, Is.True);
             Assert.That(_signals.Count, Is.EqualTo(1));
         }
 
@@ -169,16 +186,27 @@ namespace QuestSample.Tests
         }
 
         [Test]
-        public void 처음_받기에_실패하면_다음_틱에_다시_받는다()
+        public void 처음_목록_받기에_실패하면_1초부터_두_배씩_최대_30초_간격으로_다시_받는다()
         {
-            var server = new FakeQuestServer(Options);
-            server.FailNextRequest(QuestError.Network);
-            using var store = new QuestStore(server, _clock, _resets);
-            Assert.That(store.DailyMissions.CurrentValue, Is.Empty);
+            var server = new TestServer(new FakeQuestServer(Options));
+            server.FailBoards(6, QuestError.Network);
+            using var store = new QuestStore(server, _clock, _resets, new QuestStoreOptions(
+                UnixSpan.FromSeconds(1), UnixSpan.FromSeconds(30), UnixSpan.FromSeconds(60), () => 0)); // 지터 없이
+            var delays = new List<long>();
+            using var subscription = store.RefreshRetryScheduled.Subscribe(delay => delays.Add(delay.TotalSeconds));
 
-            Advance(Tick);
+            // 만들자마자 한 번 실패했고, 1초 뒤에 다시 받는다.
+            Assert.That(server.BoardRequests, Is.EqualTo(1));
+            Ticks(9);
+            Assert.That(server.BoardRequests, Is.EqualTo(1));
+            Ticks(1);
+            Assert.That(server.BoardRequests, Is.EqualTo(2));
 
+            // 그 뒤로 2 · 4 · 8 · 16초, 그다음은 32초가 아니라 최대 30초. 일곱 번째에 받는다.
+            Ticks((2 + 4 + 8 + 16 + 30) * 10);
+            Assert.That(server.BoardRequests, Is.EqualTo(7));
             Assert.That(store.DailyMissions.CurrentValue, Is.Not.Empty);
+            Assert.That(delays, Is.EqualTo(new long[] { 2, 4, 8, 16, 30 }));
         }
 
         [Test]
@@ -361,6 +389,11 @@ namespace QuestSample.Tests
             // 통신 오류로 바뀌지 않고 "초기화되어 받을 수 없다"가 그대로 간다.
             Assert.That(error.Error, Is.EqualTo(QuestError.Expired));
             Assert.That(_store.IsRequesting.CurrentValue, Is.False);
+
+            // 목록 새로 받기는 다음 틱에 다시 시도한다.
+            Assert.That(MissionId("login"), Is.EqualTo(staleId));
+            Ticks(1);
+            Assert.That(MissionId("login"), Is.Not.EqualTo(staleId));
         }
 
         [Test]
@@ -388,7 +421,7 @@ namespace QuestSample.Tests
             _server = new FakeQuestServer(Options);
             _test = new TestServer(_server);
             // Store는 만들어지자마자 목록을 받는다. 가짜 서버는 지연이 0이라 여기서 끝난다.
-            _store = new QuestStore(_test, _clock, _resets);
+            _store = new QuestStore(_test, _clock, _resets, StoreOptions);
         }
 
         // 서버와 클라의 시계를 같이 옮긴다(시계가 맞는 기기).

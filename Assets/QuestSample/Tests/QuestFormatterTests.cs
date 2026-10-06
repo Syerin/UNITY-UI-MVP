@@ -3,6 +3,7 @@ using System.Linq;
 using NUnit.Framework;
 using QuestSample.Domain;
 using QuestSample.Presentation;
+using QuestSample.Timing;
 
 namespace QuestSample.Tests
 {

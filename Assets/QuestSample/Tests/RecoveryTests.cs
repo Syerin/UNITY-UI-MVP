@@ -1,4 +1,5 @@
 using NUnit.Framework;
+using QuestSample.Timing;
 
 namespace QuestSample.Tests
 {

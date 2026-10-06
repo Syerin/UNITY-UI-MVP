@@ -1,0 +1,23 @@
+# 이 저장소의 코드 스타일. Rider · Visual Studio가 읽는다.
+root = true
+
+[*.{cs,md,json,asmdef}]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+
+[*.cs]
+indent_style = space
+indent_size = 4
+trim_trailing_whitespace = true
+# using은 System 먼저, 그다음 알파벳 순
+dotnet_sort_system_directives_first = true
+dotnet_separate_import_directive_groups = false
+# 기본 접근 한정자(private)는 쓰지 않는다
+dotnet_style_require_accessibility_modifiers = omit_if_default:suggestion
+# 네임스페이스는 블록으로(Unity의 C# 9)
+csharp_style_namespace_declarations = block_scoped:suggestion
+
+[*.{json,asmdef}]
+indent_style = space
+indent_size = 2

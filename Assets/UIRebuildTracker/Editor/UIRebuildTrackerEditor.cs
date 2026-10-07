@@ -83,7 +83,7 @@ namespace Syerin.UIRebuild
                 }
 
                 rect.GetWorldCorners(WorldCorners);
-                var outline = info.HasLayout ? Color.red : Color.yellow;
+                var outline = info.HasLayout ? Color.red : info.IsLayoutCause ? Color.cyan : Color.yellow;
                 outline.a = info.Intensity;
                 Handles.DrawSolidRectangleWithOutline(WorldCorners, new Color(0, 0, 0, 0), outline);
             }
@@ -112,16 +112,27 @@ namespace Syerin.UIRebuild
             return info.Intensity > 0.01f;
         }
 
-        // 둘 다 잡혔으면 LAYOUT+G (Layout 리빌드가 Graphic 리빌드를 함께 부르는 경우가 많다)
+        // LAYOUT: 레이아웃을 다시 계산한 루트. 둘 다 잡혔으면 LAYOUT+G (Layout 리빌드가 Graphic 리빌드를 함께 부르는 경우가 많다)
+        // CAUSE: 같은 프레임에 그 루트 안에서 Graphic 리빌드된 요소 — 레이아웃을 흔든 원인 후보
         static string BadgeText(UIRebuildTracker.RebuildInfo info)
         {
-            return info.HasLayout ? (info.HasGraphic ? "LAYOUT+G" : "LAYOUT") : "GRAPHIC";
+            if (info.HasLayout)
+            {
+                return info.HasGraphic ? "LAYOUT+G" : "LAYOUT";
+            }
+
+            return info.IsLayoutCause ? "CAUSE" : "GRAPHIC";
         }
 
         static Color BadgeColor(UIRebuildTracker.RebuildInfo info)
         {
-            return info.HasLayout
-                ? new Color(0.9f, 0.1f, 0.2f, info.Intensity)
+            if (info.HasLayout)
+            {
+                return new Color(0.9f, 0.1f, 0.2f, info.Intensity);
+            }
+
+            return info.IsLayoutCause
+                ? new Color(0.0f, 0.6f, 0.85f, info.Intensity)
                 : new Color(0.9f, 0.75f, 0.0f, info.Intensity);
         }
 

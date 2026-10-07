@@ -17,6 +17,8 @@ namespace QuestSample.Store
     /// 목록 받기가 실패하면 1초부터 두 배씩, 최대 30초 간격으로 다시 받는다(지터 포함).
     /// 클라가 먼저 하는 일은 초기화 하나뿐이고(일일 임무는 매일, 시즌 패스는 매월), 초기화 시각에서 0~60초 무작위로 늦춰
     /// 목록을 한 번 다시 받아 서버 규칙(접속하면 접속 임무 완료 등)으로 바로잡는다.
+    /// 받은 목록의 서버 시각이 그 초기화 전이면(기기 시계가 빠름, 초기화 직전 요청의 늦은 응답) 서버가 초기화를 넘긴 뒤 한 번 더 받는다.
+    /// 받기가 실패하면 목록을 서버 상태로 맞춘다 — 거절이면 바로 새로 받고, 통신 오류면(서버가 처리했을 수 있다) 다시 받기를 예약한다.
     /// 초기화 시각을 넘었는지는 ResetWatcher 하나가 정한다 — 일간 · 월간이 겹쳐도 한 신호로 온다.
     /// 화면은 여기서 만든 값을 구독하기만 하고, 받을 수 있는지 다시 계산하지 않는다.
     /// </summary>
@@ -36,6 +38,9 @@ namespace QuestSample.Store
         // 목록을 다시 받을 시각. 처음 받기, 실패 뒤 재시도, 초기화 뒤 바로잡기가 모두 이것 하나로 예약된다.
         UnixTime? _refreshDueAt;
         int _refreshFailures;
+
+        // 클라가 먼저 넘긴 초기화 시각 중 서버 응답으로 아직 확인하지 못한 것. 서버 시각이 이 시각을 넘긴 목록을 받으면 지운다.
+        UnixTime? _unconfirmedResetAt;
 
         public QuestStore(IQuestServer server, Clock100ms clock, ResetWatcher resets, QuestStoreOptions options)
         {
@@ -183,9 +188,17 @@ namespace QuestSample.Store
                 Accept(response.Board);
                 return response;
             }
-            catch (QuestServerException e) when (e.Error == QuestError.Expired)
+            catch (QuestServerException e) when (e.Error == QuestError.Network)
             {
-                // 초기화가 지난 목록으로 요청했다. 목록을 새로 받고, 거절 이유(Expired)는 그대로 올려 보낸다.
+                // 서버가 처리했는지 알 수 없다(처리한 뒤 응답만 유실됐을 수 있다). 다음 틱에 목록을 다시 받아 서버 상태로 맞춘다.
+                // 연결이 끊긴 상태라면 예약한 받기가 실패하며 간격을 늘려 다시 시도한다. 사용자에게는 통신 오류를 알린다.
+                ScheduleRefresh(_clock.Now.CurrentValue);
+                throw;
+            }
+            catch (QuestServerException)
+            {
+                // 서버가 거절했다(초기화가 지난 목록 · 이미 받음 · 조건 미달 · 받을 것 없음). 어느 쪽이든 화면의 목록이 서버와 어긋났다는 뜻이라
+                // 목록을 새로 받고, 거절 이유는 그대로 올려 보낸다.
                 // 새로 받기마저 실패하면 예약해 두고(다음 틱부터, 실패하면 간격을 늘려) 사용자에게는 원래 이유를 알린다.
                 try
                 {
@@ -211,6 +224,13 @@ namespace QuestSample.Store
             try
             {
                 await RefreshAsync(cancellationToken);
+
+                // 받은 목록이 옛 스냅샷이라 버려졌으면 예약이 그대로 남는다. 틱마다 다시 묻지 않도록 실패처럼 간격을 늘린다(알리지는 않는다).
+                if (_refreshDueAt.HasValue && _refreshDueAt.Value <= _clock.Now.CurrentValue)
+                {
+                    _refreshFailures++;
+                    _refreshDueAt = _clock.Now.CurrentValue + _options.RetryDelay(_refreshFailures);
+                }
             }
             catch (QuestServerException)
             {
@@ -230,37 +250,57 @@ namespace QuestSample.Store
             }
         }
 
-        // 서버 경계: 거절(QuestServerException)과 취소는 그대로 올리고, 그 밖의 전송 오류(타임아웃 · 연결 끊김 등)는
-        // 통신 오류로 바꾼다. 화면은 QuestServerException 하나만 보면 된다.
+        // 서버 경계: 거절(QuestServerException)과 취소는 그대로 올리고, 전송 오류(타임아웃 · 연결 끊김)만 통신 오류로 바꾼다.
+        // 화면은 QuestServerException 하나만 보면 된다. 그 밖의 예외(코드의 실수)는 통신 오류로 덮지 않고 그대로 올린다.
         static async UniTask<T> Send<T>(Func<UniTask<T>> request)
         {
             try
             {
                 return await request();
             }
-            catch (Exception e) when (!(e is QuestServerException) && !(e is OperationCanceledException))
+            catch (Exception e) when (IsTransportError(e))
             {
                 throw new QuestServerException(QuestError.Network, e);
             }
         }
 
+        // .NET 기본 전송 예외만 본다. 다른 통신 계층을 쓰면 IQuestServer 구현이 자기 예외를 이 중 하나나 Network 거절로 바꿔 던진다.
+        static bool IsTransportError(Exception e)
+        {
+            return e is TimeoutException
+                || e is System.IO.IOException
+                || e is System.Net.WebException
+                || e is System.Net.Sockets.SocketException;
+        }
+
         // 서버 응답은 모두 여기로 들어온다. 리비전이 지금보다 낮으면 늦게 도착한 옛 스냅샷이라 버린다(같으면 같은 상태다).
         void Accept(QuestBoard board)
         {
-            // 서버에서 목록을 받았으니(받기 응답도 전체 목록이다) 예약해 둔 다시 받기는 필요 없다.
-            _refreshDueAt = null;
-            _refreshFailures = 0;
-
             if (_loaded && board.Revision < _board.Value.Revision)
             {
+                // 버린 응답으로 예약을 지우지 않는다 — 초기화 뒤 다시 받기가 남아 있을 수 있다.
                 return;
             }
+
+            _refreshFailures = 0;
 
             // 서버 시각까지의 초기화는 이 응답에 이미 반영돼 있다. 목록을 통째로 바꾸니 신호는 필요 없고, 기준만 맞춘다.
             // 기준은 앞으로만 가므로(ResetWatcher), 기기 시계가 빨라도(보정하지 않는다) 같은 초기화를 되풀이하지 않는다.
             _resets.SyncToServer(board.ServerTime);
             _loaded = true;
             _board.Value = board;
+
+            // 클라가 먼저 넘긴 초기화보다 이른 서버 시각의 목록이다 — 기기 시계가 빠르거나, 초기화 직전에 보낸 요청의 응답이 늦게 왔다.
+            // 서버는 아직 그 초기화 전이니, 서버가 그 시각을 넘긴 뒤(남은 차이 + 0~60초) 목록을 한 번 더 받는다.
+            if (_unconfirmedResetAt.HasValue && board.ServerTime < _unconfirmedResetAt.Value)
+            {
+                _refreshDueAt = _clock.Now.CurrentValue + (_unconfirmedResetAt.Value - board.ServerTime) + _options.RefetchDelay();
+                return;
+            }
+
+            // 서버에서 목록을 받았으니(받기 응답도 전체 목록이다) 예약해 둔 다시 받기는 필요 없다.
+            _unconfirmedResetAt = null;
+            _refreshDueAt = null;
         }
 
         // 초기화 시각을 넘겼다는 신호. 서버에 묻지 않고 먼저 되돌린다 — 일일 임무는 일간, 시즌 패스는 월간 신호로.
@@ -282,6 +322,8 @@ namespace QuestSample.Store
 
             // 클라는 서버 규칙(접속하면 접속 임무 완료 등)을 모르니, 목록을 한 번 다시 받아 바로잡는다.
             // 모든 기기가 초기화 시각에 한꺼번에 묻지 않도록 초기화 시각에서 0~60초 사이로 퍼뜨린다(이미 지났으면 바로).
+            // 서버 시각이 이 초기화를 넘긴 목록을 받을 때까지는 확인되지 않은 초기화로 둔다(Accept).
+            _unconfirmedResetAt = signal.At;
             ScheduleRefresh(signal.At + _options.RefetchDelay());
         }
 

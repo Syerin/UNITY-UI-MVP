@@ -136,6 +136,7 @@ namespace QuestSample.Tests
             Assert.That(_store.HasReceivableMission.CurrentValue, Is.True);
 
             // 클라가 넘긴 초기화 기준은 되돌아가지 않아서, 틱이 계속 돌아도 같은 초기화로 다시 비우거나 묻지 않는다.
+            // (서버가 그 초기화 시각을 실제로 넘기면 — 여기서는 약 24시간 뒤 — 그때 한 번 더 받는다.)
             Ticks(600);
             Assert.That(_test.BoardRequests, Is.EqualTo(2));
             Assert.That(_store.HasReceivableMission.CurrentValue, Is.True);
@@ -408,12 +409,101 @@ namespace QuestSample.Tests
             Assert.That(_test.BoardRequests, Is.EqualTo(2)); // 처음 한 번 + 새로 받기
         }
 
+        [Test]
+        public void 이미_받았다고_거절되면_목록을_새로_받는다()
+        {
+            // 다른 기기에서 먼저 받았다: 서버는 받음, 이 기기의 목록은 아직 받을 수 있음.
+            var id = MissionId("login");
+            Wait(_server.ReceiveAsync(QuestGroup.DailyMission, id, CancellationToken.None));
+
+            var error = Assert.Throws<QuestServerException>(
+                () => Wait(_store.ReceiveAsync(QuestGroup.DailyMission, id)));
+
+            Assert.That(error.Error, Is.EqualTo(QuestError.AlreadyReceived));
+            Assert.That(_test.BoardRequests, Is.EqualTo(2)); // 처음 한 번 + 새로 받기
+            Assert.That(_store.HasReceivableMission.CurrentValue, Is.False);
+        }
+
+        [Test]
+        public void 서버가_처리한_뒤_응답이_유실되면_다음_틱에_목록을_다시_받아_바로잡는다()
+        {
+            _test.LoseNextResponse();
+
+            var error = Assert.Throws<QuestServerException>(
+                () => Wait(_store.ReceiveAsync(QuestGroup.DailyMission, MissionId("login"))));
+
+            // 사용자에게는 통신 오류다. 서버는 이미 줬으므로, 다음 틱에 목록을 다시 받아 '받음'으로 맞춘다
+            // (같은 버튼을 다시 눌러 '이미 받음'을 보게 두지 않는다).
+            Assert.That(error.Error, Is.EqualTo(QuestError.Network));
+            Assert.That(_store.HasReceivableMission.CurrentValue, Is.True);
+            Ticks(1);
+            Assert.That(_test.BoardRequests, Is.EqualTo(2));
+            Assert.That(_store.HasReceivableMission.CurrentValue, Is.False);
+            Assert.That(_store.SeasonPoints.CurrentValue, Is.EqualTo(100));
+        }
+
+        [Test]
+        public void 기기_시계가_5분_빠르면_서버가_초기화를_넘긴_뒤_목록을_다시_받는다()
+        {
+            // 서버는 9시, 기기는 9시 5분. 접속 임무는 받아 둔다.
+            TearDown();
+            Open(KstTime(2026, 10, 2, 9), UnixSpan.FromMinutes(5));
+            Wait(_store.ReceiveAsync(QuestGroup.DailyMission, MissionId("login")));
+
+            // 기기 10:00:31(서버 09:55:31): 클라가 먼저 초기화하고 30초 뒤 다시 받았지만, 서버는 아직 초기화 전(접속 임무 받음)이다.
+            Advance(UnixSpan.FromMinutes(55) + UnixSpan.FromSeconds(31));
+            Assert.That(_test.BoardRequests, Is.EqualTo(2));
+            Assert.That(_store.HasReceivableMission.CurrentValue, Is.False);
+
+            // 서버가 초기화를 넘긴 뒤(서버 10:00 + 30초) 한 번 더 받아, 새 날의 접속 임무 완료로 바로잡는다.
+            Advance(UnixSpan.FromMinutes(4) + UnixSpan.FromSeconds(58));
+            Assert.That(_test.BoardRequests, Is.EqualTo(2));
+            Advance(UnixSpan.FromSeconds(1));
+            Assert.That(_test.BoardRequests, Is.EqualTo(3));
+            Assert.That(_store.HasReceivableMission.CurrentValue, Is.True);
+
+            // 그 뒤로는 버튼 없이 묻지 않는다.
+            Advance(UnixSpan.FromHours(1));
+            Assert.That(_test.BoardRequests, Is.EqualTo(3));
+        }
+
+        [Test]
+        public void 초기화_직전에_보낸_받기의_응답이_초기화_뒤에_와도_새_목록을_다시_받는다()
+        {
+            // 09:59:59.5에 받기를 보냈다. 서버는 바로 처리했지만 응답은 초기화(10:00) 뒤에 도착한다.
+            TearDown();
+            Open(KstTime(2026, 10, 2, 9, 59, 59, 500));
+            _test.HoldResponses();
+            var receive = _store.ReceiveAsync(QuestGroup.DailyMission, MissionId("login"));
+
+            Advance(UnixSpan.FromMilliseconds(500)); // 10:00:00 클라 초기화, 30초 뒤 다시 받기 예약
+            _test.Release();
+            Wait(receive); // 초기화 전 서버 시각의 목록이 늦게 반영된다
+
+            // 늦은 응답이 예약을 지우지 않는다. 서버 초기화 + 30초 뒤 다시 받아 새 날 목록으로 바로잡는다.
+            Assert.That(_test.BoardRequests, Is.EqualTo(1));
+            Advance(UnixSpan.FromSeconds(31));
+            Assert.That(_test.BoardRequests, Is.EqualTo(2));
+            Assert.That(_store.HasReceivableMission.CurrentValue, Is.True);
+        }
+
+        [Test]
+        public void 전송_오류가_아닌_예외는_통신_오류로_덮지_않는다()
+        {
+            _test.ThrowNext(new InvalidOperationException("코드의 실수"));
+
+            Assert.Throws<InvalidOperationException>(
+                () => Wait(_store.ReceiveAsync(QuestGroup.DailyMission, MissionId("login"))));
+            Assert.That(_store.IsRequesting.CurrentValue, Is.False);
+        }
+
         // start 시각에 앱을 켠 것처럼 만든다. 게임의 AppLifetimeScope처럼 ResetWatcher가 시계를 구독한다.
-        void Open(UnixTime start)
+        // deviceAhead: 기기 시계가 서버보다 앞선 만큼(보정하지 않는다).
+        void Open(UnixTime start, UnixSpan deviceAhead = default)
         {
             _serverTime = new FakeTimeProvider(DateTimeOffset.FromUnixTimeMilliseconds(start.ToUnixMilliseconds()));
             UnixTime.TimeProvider = _serverTime;
-            _clock = new Clock100ms(start);
+            _clock = new Clock100ms(start + deviceAhead);
             _resets = new ResetWatcher(ResetSchedule.Default);
             _watching = _resets.Watch(_clock.Now);
             _signals = new List<ResetSignal>();
@@ -441,9 +531,9 @@ namespace QuestSample.Tests
         }
 
         // 한국 시간으로 읽은 시각. 달력 날짜를 UnixTime으로 바꿀 때만 DateTime을 거친다.
-        static UnixTime KstTime(int year, int month, int day, int hour)
+        static UnixTime KstTime(int year, int month, int day, int hour, int minute = 0, int second = 0, int millisecond = 0)
         {
-            return new UnixTime(new DateTime(year, month, day, hour, 0, 0, DateTimeKind.Utc)) - UnixTimeExtensions.Kst;
+            return new UnixTime(new DateTime(year, month, day, hour, minute, second, millisecond, DateTimeKind.Utc)) - UnixTimeExtensions.Kst;
         }
 
         string MissionId(string key)

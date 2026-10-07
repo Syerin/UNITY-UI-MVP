@@ -17,6 +17,8 @@ namespace QuestSample.Tests
         readonly IQuestServer _inner;
         readonly Queue<QuestBoard> _replayBoards = new Queue<QuestBoard>();
         UniTaskCompletionSource _hold;
+        UniTaskCompletionSource _holdResponses;
+        bool _loseNextResponse;
         int _failBoards;
         QuestError _failBoardsWith;
         Exception _throwNext;
@@ -55,11 +57,26 @@ namespace QuestSample.Tests
             _hold = new UniTaskCompletionSource();
         }
 
+        /// <summary>서버는 바로 처리하고, 받기 응답만 Release할 때까지 붙잡는다(응답이 늦게 도착하는 상황).</summary>
+        public void HoldResponses()
+        {
+            _holdResponses = new UniTaskCompletionSource();
+        }
+
+        /// <summary>다음 받기는 서버가 처리한 뒤 응답이 유실된다(타임아웃).</summary>
+        public void LoseNextResponse()
+        {
+            _loseNextResponse = true;
+        }
+
         public void Release()
         {
             var hold = _hold;
+            var holdResponses = _holdResponses;
             _hold = null;
+            _holdResponses = null;
             hold?.TrySetResult();
+            holdResponses?.TrySetResult();
         }
 
         public async UniTask<QuestBoard> GetBoardAsync(CancellationToken cancellationToken)
@@ -89,7 +106,7 @@ namespace QuestSample.Tests
                 await _hold.Task;
             }
 
-            return await _inner.ReceiveAsync(group, questId, cancellationToken);
+            return await AfterProcess(await _inner.ReceiveAsync(group, questId, cancellationToken));
         }
 
         public async UniTask<ReceiveResponse> ReceiveAllAsync(QuestGroup group, IReadOnlyList<string> questIds, CancellationToken cancellationToken)
@@ -102,7 +119,24 @@ namespace QuestSample.Tests
                 await _hold.Task;
             }
 
-            return await _inner.ReceiveAllAsync(group, questIds, cancellationToken);
+            return await AfterProcess(await _inner.ReceiveAllAsync(group, questIds, cancellationToken));
+        }
+
+        // 서버가 처리한 뒤: 응답을 잃거나(타임아웃) 늦게 돌려준다.
+        async UniTask<ReceiveResponse> AfterProcess(ReceiveResponse response)
+        {
+            if (_loseNextResponse)
+            {
+                _loseNextResponse = false;
+                throw new TimeoutException("응답 유실");
+            }
+
+            if (_holdResponses != null)
+            {
+                await _holdResponses.Task;
+            }
+
+            return response;
         }
 
         void ThrowIfAsked()

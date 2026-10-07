@@ -1,0 +1,3 @@
+# GitHub 언어 통계에서 서드파티 파일을 뺀다(TextMesh Pro 셰이더 때문에 대표 언어가 ShaderLab으로 보였다).
+Assets/TextMesh[[:space:]]Pro/** linguist-vendored
+Assets/Packages/** linguist-vendored
